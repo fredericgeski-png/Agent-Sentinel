@@ -5,10 +5,13 @@ import KillSwitchButton from "@/components/dashboard/KillSwitchButton";
 import AgentChart from "@/components/dashboard/AgentChart";
 import TelemetryTable from "@/components/dashboard/TelemetryTable";
 import { useTelemetryStats } from "@/hooks/use-monitor";
-import { DollarSign, Cpu, Gauge } from "lucide-react";
+import { DollarSign, Cpu, Gauge, Zap } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { useLocation } from "wouter";
 
 export default function Dashboard() {
   const { data: stats, isLoading } = useTelemetryStats();
+  const [, setLocation] = useLocation();
 
   const defaultStats = {
     totalWastePrevented: 0,
@@ -20,7 +23,20 @@ export default function Dashboard() {
 
   return (
     <AppLayout>
-      <div className="flex flex-col gap-6 max-w-[1600px] mx-auto">
+      <div className="flex flex-col gap-6 max-w-[1600px] mx-auto text-foreground">
+        
+        {/* Header with Upgrade */}
+        <div className="flex justify-between items-center mb-2">
+          <h1 className="text-2xl font-bold">Dashboard</h1>
+          <Button 
+            onClick={() => setLocation("/pricing")}
+            variant="outline"
+            className="border-primary text-primary hover:bg-primary/10 gap-2"
+          >
+            <Zap className="w-4 h-4 fill-current" />
+            Upgrade to Pro
+          </Button>
+        </div>
         
         {/* Top Grid */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

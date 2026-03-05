@@ -2,10 +2,13 @@ import { db } from "./db";
 import {
   telemetry,
   killSwitches,
+  webhooks,
   type Telemetry,
   type InsertTelemetry,
   type KillSwitch,
   type InsertKillSwitch,
+  type Webhook,
+  type InsertWebhook,
   type PaginatedTelemetryResponse
 } from "@shared/schema";
 import { desc, eq, count, sql } from "drizzle-orm";
@@ -19,6 +22,10 @@ export interface IStorage {
   // Kill Switch
   getKillSwitchStatus(): Promise<KillSwitch | undefined>;
   activateKillSwitch(reason?: string): Promise<KillSwitch>;
+
+  // Webhooks
+  createWebhook(data: InsertWebhook): Promise<Webhook>;
+  getWebhooksByEvent(event: string): Promise<Webhook[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -73,6 +80,15 @@ export class DatabaseStorage implements IStorage {
       reason: reason || "Manual trigger via Dashboard",
     }).returning();
     return activated;
+  }
+
+  async createWebhook(data: InsertWebhook): Promise<Webhook> {
+    const [webhook] = await db.insert(webhooks).values(data).returning();
+    return webhook;
+  }
+
+  async getWebhooksByEvent(event: string): Promise<Webhook[]> {
+    return await db.select().from(webhooks).where(eq(webhooks.event, event));
   }
 }
 
