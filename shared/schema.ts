@@ -22,14 +22,26 @@ export const killSwitches = pgTable("kill_switches", {
   activatedAt: timestamp("activated_at").defaultNow().notNull(),
 });
 
+export const webhooks = pgTable("webhooks", {
+  id: serial("id").primaryKey(),
+  url: text("url").notNull(),
+  event: text("event").notNull(), // 'kill_switch_activated'
+  secret: text("secret"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
 export const insertTelemetrySchema = createInsertSchema(telemetry).omit({ id: true, createdAt: true });
 export const insertKillSwitchSchema = createInsertSchema(killSwitches).omit({ id: true, activatedAt: true });
+export const insertWebhookSchema = createInsertSchema(webhooks).omit({ id: true, createdAt: true });
 
 export type Telemetry = typeof telemetry.$inferSelect;
 export type InsertTelemetry = z.infer<typeof insertTelemetrySchema>;
 
 export type KillSwitch = typeof killSwitches.$inferSelect;
 export type InsertKillSwitch = z.infer<typeof insertKillSwitchSchema>;
+
+export type Webhook = typeof webhooks.$inferSelect;
+export type InsertWebhook = z.infer<typeof insertWebhookSchema>;
 
 // API request types
 export const calculateEntropyRequestSchema = z.object({

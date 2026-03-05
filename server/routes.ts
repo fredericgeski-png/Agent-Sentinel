@@ -131,7 +131,22 @@ export async function registerRoutes(
   app.post(api.killSwitch.activate.path, async (req, res) => {
     try {
       const { reason } = req.body || {};
-      await storage.activateKillSwitch(reason);
+      const status = await storage.activateKillSwitch(reason);
+      
+      // Notify webhooks
+      const hooks = await storage.getWebhooksByEvent('kill_switch_activated');
+      for (const hook of hooks) {
+        fetch(hook.url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            event: 'kill_switch_activated',
+            reason: status.reason,
+            activatedAt: status.activatedAt,
+          })
+        }).catch(err => console.error(`Webhook failure [${hook.url}]:`, err));
+      }
+
       res.status(200).json({
         success: true,
         message: "Kill switch activated globally"

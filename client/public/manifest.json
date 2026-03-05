@@ -1,0 +1,16 @@
+{
+  "name": "Kinetic Monitor",
+  "short_name": "Kinetic",
+  "description": "Kinetic Integrity Monitor for Agentic AI",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#09090b",
+  "theme_color": "#06b6d4",
+  "icons": [
+    {
+      "src": "/favicon.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    }
+  ]
+}
