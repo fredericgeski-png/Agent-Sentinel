@@ -1,198 +1,255 @@
-# Kinetic Integrity Monitor
+# Kinetic Integrity Monitor — Free-to-Pro Upgrade System
 
-Lightweight, self-hosted AI agent safety & observability.  
-Runs on a **$10/mo VPS**. No cloud lock-in. No data leaves your server.
+Production-ready Free → Pro upgrade flow for KIM. Users get 5 agents free, hit a soft paywall at agent 6, and upgrade to unlimited via Sellar.
 
 ---
 
-## Quick Start (Docker — one command)
+## Architecture Overview
 
-```bash
-# 1. Clone
-git clone https://github.com/you/kinetic-integrity-monitor
-cd kinetic-integrity-monitor
-
-# 2. Configure
-cp .env.example .env
-# Edit .env — set POSTGRES_PASSWORD at minimum
-
-# 3. Launch
-docker compose up -d --build
-
-# 4. Open dashboard
-open http://localhost:3001
+```
+User tries to add 6th agent
+        ↓
+POST /api/agents → 402 { error: "agent_limit_reached", upgrade_url }
+        ↓
+Frontend shows <UpgradeDialog />
+        ↓
+User clicks "Upgrade to Pro"
+        ↓
+POST /api/upgrade → { checkout_url }
+        ↓
+window.location.href = checkout_url (Sellar checkout)
+        ↓
+User pays $299/month in Sellar
+        ↓
+Sellar POST /api/webhook/sellar { type: "payment.success" }
+        ↓
+Backend upgrades user: subscription_tier = 'pro'
+        ↓
+User can now create unlimited agents ✓
 ```
 
 ---
 
-## Local Dev
+## File Structure
+
+```
+kim-upgrade/
+├── database/
+│   └── schema.sql              # PostgreSQL tables, indexes, constraints
+│
+├── backend/
+│   ├── .env.example            # Required environment variables
+│   ├── package.json
+│   ├── src/
+│   │   ├── index.ts            # Express app entry point
+│   │   ├── db/pool.ts          # PostgreSQL connection pool
+│   │   ├── middleware/auth.ts  # JWT auth middleware
+│   │   ├── utils/
+│   │   │   ├── logger.ts       # Winston logger
+│   │   │   └── tiers.ts        # Tier limits & helpers
+│   │   └── routes/
+│   │       ├── auth.ts         # POST /signup, POST /login
+│   │       ├── agents.ts       # GET/POST/DELETE /agents
+│   │       ├── subscription.ts # GET /user/subscription, POST /upgrade
+│   │       └── webhook.ts      # POST /webhook/sellar
+│   └── tests/
+│       └── upgrade.test.ts     # Full integration test suite
+│
+└── frontend/
+    └── src/
+        ├── types/index.ts           # TypeScript interfaces
+        ├── api/index.ts             # API client (fetch wrapper)
+        ├── context/AuthContext.tsx  # Auth state provider
+        └── components/
+            ├── AgentList.tsx         # Main dashboard with all sub-components
+            ├── UpgradeDialog.tsx     # Paywall modal
+            ├── SubscriptionCard.tsx  # Subscription status card
+            ├── AgentQuotaBar.tsx     # Inline quota indicator
+            ├── QuotaWarningBanner.tsx # Warning when ≤2 agents remain
+            └── UpgradePrompt.tsx     # Context-aware CTA banner
+```
+
+---
+
+## Setup
+
+### 1. Database
 
 ```bash
-cp .env.example .env
-# Start postgres (or use docker compose up postgres -d)
+# Create database
+createdb kim_db
+
+# Run schema
+psql kim_db -f database/schema.sql
+```
+
+### 2. Backend
+
+```bash
+cd backend
 npm install
-npm run dev          # starts backend :3001 + frontend :5173 concurrently
+
+# Copy and fill in environment variables
+cp .env.example .env
+# Edit .env with your values
+
+npm run dev      # Development with hot reload
+npm run build    # Production build
+npm start        # Run production build
 ```
 
----
+### Required Environment Variables
 
-## SDK Integration
+| Variable | Description |
+|---|---|
+| `DATABASE_URL` | PostgreSQL connection string |
+| `JWT_SECRET` | Random 32+ character secret |
+| `SELLAR_PRO_PRODUCT_ID` | Your Sellar product ID for Pro tier |
+| `SELLAR_WEBHOOK_SECRET` | Sellar webhook signing secret (optional but recommended) |
+| `ALLOWED_ORIGIN` | Frontend URL for CORS |
 
-### Python — LangChain
+### 3. Frontend
 
-```python
-from kinetic.monitor import KineticCallbackHandler
+```bash
+cd frontend
+npm install
 
-handler = KineticCallbackHandler(agent_id="my-chain")
-result = chain.invoke({"input": "..."}, config={"callbacks": [handler]})
-```
+# Set API URL
+echo "REACT_APP_API_URL=http://localhost:3001" > .env.local
 
-### Python — CrewAI
-
-```python
-from kinetic.monitor import wrap_crewai_agent
-from crewai import Crew
-
-crew = wrap_crewai_agent(
-    Crew(agents=[...], tasks=[...]),
-    agent_id="research-crew-v1"
-)
-crew.kickoff()
-# Kinetic now tracks entropy, loops, and auto-terminates at threshold
-```
-
-### Python — Generic callable
-
-```python
-from kinetic.monitor import wrap_agent
-
-@wrap_agent(agent_id="my-agent")
-def run_agent(prompt: str) -> str:
-    return llm.call(prompt)
-```
-
-### Node.js
-
-```ts
-import { AgentMonitor } from './sdk/node/src/monitor'
-
-const monitor = new AgentMonitor('my-agent')
-
-// Wrap individual steps
-const result = await monitor.wrap(
-  async () => llm.call(prompt),
-  'llm_call'
-)
-
-// Manual recording
-monitor.recordOutput(rawOutput, 'search_tool')
-```
-
-### Go
-
-```go
-import "github.com/you/kinetic/sdk/go"
-
-m := kinetic.NewMonitor("my-agent", uuid.New().String())
-
-result, err := m.Wrap(func() (string, error) {
-    return llm.Call(ctx, prompt)
-}, "llm_call")
+npm start    # Development
+npm run build # Production
 ```
 
 ---
 
 ## API Reference
 
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/v1/calculate-entropy` | Compute entropy breakdown for an agent step |
-| GET  | `/api/v1/kill-switch/check` | Check if kill switch is active |
-| POST | `/api/v1/kill-switch/activate` | Activate global or per-agent kill switch |
-| POST | `/api/v1/kill-switch/reset` | Reset kill switch |
-| GET  | `/api/v1/telemetry` | Paginated telemetry feed |
-| POST | `/api/v1/telemetry` | Emit a telemetry event |
-| GET  | `/api/v1/telemetry/stats` | Dashboard stats (sessions, entropy, events) |
-| GET  | `/health` | Health check |
+### Authentication
 
----
-
-## Environment Variables
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `POSTGRES_URL` | ✅ | — | PostgreSQL connection string |
-| `PORT` | — | `3001` | Server port |
-| `NODE_ENV` | — | `development` | Set to `production` in prod |
-| `CORS_ORIGIN` | — | `*` | Allowed CORS origin |
-| `WEBHOOK_URLS` | — | — | Comma-separated kill-switch notification URLs |
-| `WEBHOOK_SECRET` | — | — | HMAC secret for webhook signatures |
-| `KINETIC_API_URL` | — | `http://localhost:3001/api/v1` | SDK target URL |
-| `KINETIC_ENTROPY_THRESHOLD` | — | `0.85` | Auto-terminate entropy threshold |
-| `VITE_API_URL` | — | `/api/v1` | Frontend API base URL |
-
----
-
-## Architecture
-
+All protected endpoints require:
 ```
-┌─────────────────────────────────────────────────────┐
-│  Agent Process (Python / Node / Go)                 │
-│  ┌──────────────────────────────────────────────┐   │
-│  │  SDK: AgentMonitor / KineticCallbackHandler  │   │
-│  │  • Records tokens, tool calls, loop signals  │   │
-│  │  • POSTs /calculate-entropy every 5 calls   │   │
-│  │  • Auto-terminates at threshold             │   │
-│  └───────────────────────┬──────────────────────┘   │
-└──────────────────────────┼──────────────────────────┘
-                           │ HTTP (3s timeout, offline queue)
-┌──────────────────────────▼──────────────────────────┐
-│  Kinetic Backend (Node.js + Express)                │
-│  • Entropy engine (Shannon + loop + tool + drift)   │
-│  • Kill switch (in-memory + DB + webhooks)          │
-│  • Telemetry store + stats aggregation              │
-│  • Rate limiting (120 req/min per agent)            │
-└──────────────────────────┬──────────────────────────┘
-                           │
-┌──────────────────────────▼──────────────────────────┐
-│  PostgreSQL                                         │
-│  sessions · entropy_logs · telemetry · kill_switch  │
-└─────────────────────────────────────────────────────┘
-                           │
-┌──────────────────────────▼──────────────────────────┐
-│  React Dashboard (served by Express in prod)        │
-│  • Real-time entropy gauge (Canvas + animation)     │
-│  • Per-agent chart (Recharts)                       │
-│  • Kill All button with confirm dialog              │
-│  • Live telemetry feed (TanStack Query, 3s poll)    │
-└─────────────────────────────────────────────────────┘
+Authorization: Bearer <jwt_token>
 ```
 
----
+### Endpoints
 
-## Docker Image Size
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| POST | `/api/auth/signup` | No | Register + auto-assign Free tier |
+| POST | `/api/auth/login` | No | Login, receive JWT |
+| GET | `/api/agents` | Yes | List agents + subscription info |
+| POST | `/api/agents` | Yes | Create agent (enforces 5-agent limit for Free) |
+| DELETE | `/api/agents/:id` | Yes | Delete an agent |
+| GET | `/api/user/subscription` | Yes | Subscription status |
+| POST | `/api/upgrade` | Yes | Get Sellar checkout URL |
+| POST | `/api/webhook/sellar` | No | Sellar payment webhook |
 
-Multi-stage build: `node:20-alpine` builder → `node:20-alpine` runtime  
-Final image: **~210–230 MB** (pruned node_modules + compiled JS only)
+### 402 Response (agent limit reached)
 
----
-
-## Deployment on a $10/mo VPS
-
-```bash
-# On your server (Ubuntu 22.04 / Debian 12)
-curl -fsSL https://get.docker.com | sh
-git clone https://github.com/you/kinetic-integrity-monitor
-cd kinetic-integrity-monitor
-cp .env.example .env && nano .env   # set strong POSTGRES_PASSWORD
-docker compose up -d --build
-```
-
-For HTTPS, put Caddy or nginx in front:
-
-```
-# Caddyfile
-monitor.yourdomain.com {
-    reverse_proxy localhost:3001
+```json
+{
+  "error": "agent_limit_reached",
+  "message": "Free tier limited to 5 agents. Upgrade to Pro for unlimited agents.",
+  "current_count": 5,
+  "limit": 5,
+  "tier": "free",
+  "upgrade_url": "https://checkout.sellar.io/YOUR_PRODUCT_ID?prefill_email=..."
 }
 ```
+
+---
+
+## Sellar Webhook Setup
+
+1. In your Sellar dashboard, set webhook URL to:
+   `https://yourdomain.com/api/webhook/sellar`
+
+2. Subscribe to events: `payment.success`, `subscription.created`
+
+3. Copy the webhook signing secret into `SELLAR_WEBHOOK_SECRET`
+
+The webhook handler:
+- Verifies signature (HMAC-SHA256)
+- Finds user by `customer_email` or `sellar_customer_id`
+- Sets `subscription_tier = 'pro'`
+- Logs change to `subscription_changes` audit table
+- Returns 200 always (prevents Sellar retry storms)
+
+---
+
+## Frontend Components
+
+### `<AgentList />`
+Main dashboard. Fetches agents + subscription, handles create/delete, shows `<UpgradeDialog>` on 402 error.
+
+### `<UpgradeDialog isOpen onClose currentCount limit tier upgradeUrl />`
+Full-screen modal with tier comparison, ROI calculator, and redirect to Sellar.
+
+### `<SubscriptionCard subscription onUpgradeClick />`
+Sidebar card showing quota, progress bar, and upgrade CTA.
+
+### `<AgentQuotaBar subscription />`
+Compact inline indicator with color-coded progress (green → yellow → red).
+
+### `<QuotaWarningBanner subscription onUpgradeClick />`
+Auto-shown when ≤2 agents remain. Auto-dismisses after 15s.
+
+### `<UpgradePrompt userTier context onUpgrade />`
+Context-aware CTA banner for dashboard, agents page, or analytics page.
+
+---
+
+## Testing
+
+```bash
+cd backend
+
+# Set test database
+export TEST_DATABASE_URL=postgresql://user:pass@localhost:5432/kim_test
+
+npm test         # Run all tests
+npm test -- --coverage  # With coverage report
+```
+
+Tests cover:
+- Signup → free tier assignment
+- Login → JWT issuance
+- Agent creation (agents 1–5 succeed, 6th returns 402)
+- Webhook upgrades user to Pro
+- After upgrade, 6th+ agents succeed
+- Auth enforcement on all protected routes
+
+---
+
+## Deployment Checklist
+
+- [ ] Set all required environment variables
+- [ ] Run `database/schema.sql` on production DB
+- [ ] Configure Sellar webhook URL
+- [ ] Set `NODE_ENV=production` to hide stack traces
+- [ ] Enable SSL on database connection
+- [ ] Configure CORS `ALLOWED_ORIGIN` to production frontend URL
+- [ ] Set strong `JWT_SECRET` (use `openssl rand -hex 32`)
+- [ ] Test webhook with Sellar's test payment
+- [ ] Monitor `subscription_changes` table for audit trail
+
+---
+
+## Troubleshooting
+
+**User not upgraded after payment**
+- Check `/api/webhook/sellar` logs for the webhook call
+- Verify `SELLAR_WEBHOOK_SECRET` matches Sellar dashboard
+- Confirm user exists with matching email or `sellar_customer_id`
+
+**402 error even on Pro**
+- JWT may be stale (issued before upgrade). User should log out and back in.
+- Verify `subscription_tier = 'pro'` in the `users` table
+
+**CORS errors**
+- Check `ALLOWED_ORIGIN` env var matches your frontend URL exactly
+
+**Database connection errors**
+- Verify `DATABASE_URL` format: `postgresql://user:pass@host:5432/dbname`
+- Check firewall/network rules if using hosted DB
