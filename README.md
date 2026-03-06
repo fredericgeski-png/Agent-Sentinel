@@ -1,31 +1,27 @@
-# Kinetic Integrity Monitor — Free-to-Pro Upgrade System
+# Kinetic Integrity Monitor — Authentication System
 
-Production-ready Free → Pro upgrade flow for KIM. Users get 5 agents free, hit a soft paywall at agent 6, and upgrade to unlimited via Sellar.
+Complete production-ready user authentication for KIM. All routes are protected by JWT. New users auto-assigned Free tier.
 
 ---
 
-## Architecture Overview
+## Flow
 
 ```
-User tries to add 6th agent
-        ↓
-POST /api/agents → 402 { error: "agent_limit_reached", upgrade_url }
-        ↓
-Frontend shows <UpgradeDialog />
-        ↓
-User clicks "Upgrade to Pro"
-        ↓
-POST /api/upgrade → { checkout_url }
-        ↓
-window.location.href = checkout_url (Sellar checkout)
-        ↓
-User pays $299/month in Sellar
-        ↓
-Sellar POST /api/webhook/sellar { type: "payment.success" }
-        ↓
-Backend upgrades user: subscription_tier = 'pro'
-        ↓
-User can now create unlimited agents ✓
+Visit any protected route
+       ↓
+ProtectedRoute checks localStorage for JWT
+       ↓
+Not found / expired → redirect to /login
+       ↓
+User logs in → POST /api/auth/login returns JWT
+       ↓
+Token stored in localStorage
+       ↓
+All API calls: Authorization: Bearer <token>
+       ↓
+Token auto-refreshed 1 hour before expiry
+       ↓
+Logout → POST /api/auth/logout → token blacklisted in Redis
 ```
 
 ---
@@ -33,41 +29,87 @@ User can now create unlimited agents ✓
 ## File Structure
 
 ```
-kim-upgrade/
+kim-auth/
 ├── database/
-│   └── schema.sql              # PostgreSQL tables, indexes, constraints
+│   └── auth-schema.sql           # users, password_resets, auth_logs tables
 │
 ├── backend/
-│   ├── .env.example            # Required environment variables
-│   ├── package.json
+│   ├── .env.example
 │   ├── src/
-│   │   ├── index.ts            # Express app entry point
-│   │   ├── db/pool.ts          # PostgreSQL connection pool
-│   │   ├── middleware/auth.ts  # JWT auth middleware
-│   │   ├── utils/
-│   │   │   ├── logger.ts       # Winston logger
-│   │   │   └── tiers.ts        # Tier limits & helpers
-│   │   └── routes/
-│   │       ├── auth.ts         # POST /signup, POST /login
-│   │       ├── agents.ts       # GET/POST/DELETE /agents
-│   │       ├── subscription.ts # GET /user/subscription, POST /upgrade
-│   │       └── webhook.ts      # POST /webhook/sellar
+│   │   ├── index.ts              # Express app + security headers + CORS
+│   │   ├── db/
+│   │   │   ├── pool.ts           # PostgreSQL connection pool
+│   │   │   └── redis.ts          # Token blacklist (Redis)
+│   │   ├── middleware/
+│   │   │   ├── authenticate.ts   # JWT verify + blacklist check + tier attach
+│   │   │   └── rateLimiter.ts    # Login (5/15min), signup (3/hr), forgot-pw (3/hr)
+│   │   ├── services/
+│   │   │   ├── email.ts          # Nodemailer (reset + change notification)
+│   │   │   └── authLog.ts        # Write-safe event logging to auth_logs table
+│   │   ├── routes/
+│   │   │   └── auth.ts           # All 8 endpoints
+│   │   └── utils/
+│   │       ├── jwt.ts            # generateToken, verifyToken, expiry helpers
+│   │       ├── password.ts       # bcrypt hash/compare + strength validation
+│   │       └── logger.ts         # Winston
 │   └── tests/
-│       └── upgrade.test.ts     # Full integration test suite
+│       └── auth.test.ts          # Full integration test suite
 │
 └── frontend/
     └── src/
-        ├── types/index.ts           # TypeScript interfaces
-        ├── api/index.ts             # API client (fetch wrapper)
-        ├── context/AuthContext.tsx  # Auth state provider
-        └── components/
-            ├── AgentList.tsx         # Main dashboard with all sub-components
-            ├── UpgradeDialog.tsx     # Paywall modal
-            ├── SubscriptionCard.tsx  # Subscription status card
-            ├── AgentQuotaBar.tsx     # Inline quota indicator
-            ├── QuotaWarningBanner.tsx # Warning when ≤2 agents remain
-            └── UpgradePrompt.tsx     # Context-aware CTA banner
+        ├── App.tsx                      # BrowserRouter + AuthProvider + all routes
+        ├── types/auth.ts                # TypeScript interfaces
+        ├── api/client.ts                # Fetch wrapper with auto-refresh + 401 handling
+        ├── context/AuthContext.tsx      # Global auth state + auto-refresh timer
+        ├── hooks/usePasswordStrength.ts # Password scoring hook
+        └── components/auth/
+            ├── AuthLayout.tsx           # Shared branded page wrapper
+            ├── FormInput.tsx            # Accessible input + PasswordToggle
+            ├── PasswordStrengthMeter.tsx # Animated strength bar + checklist
+            ├── ProtectedRoute.tsx       # Auth guard + tier guard
+            ├── LoginPage.tsx            # Full login form
+            ├── SignupPage.tsx           # Signup with real-time strength
+            ├── ForgotPasswordPage.tsx   # Email reset request
+            └── PasswordResetPage.tsx    # Token-based password reset
 ```
+
+---
+
+## API Endpoints
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| POST | `/api/auth/signup` | No | Register + auto-assign Free tier |
+| POST | `/api/auth/login` | No | Login, return 7-day JWT |
+| POST | `/api/auth/logout` | Yes | Blacklist token in Redis |
+| POST | `/api/auth/refresh` | Yes | Issue new token (within 24hr of expiry) |
+| GET | `/api/auth/me` | Yes | Current user info |
+| POST | `/api/auth/change-password` | Yes | Update password + invalidate session |
+| POST | `/api/auth/forgot-password` | No | Send reset email (rate limited) |
+| POST | `/api/auth/reset-password` | No | Consume reset token, set new password |
+
+---
+
+## Security Features
+
+**Password hashing** — bcrypt, 10 rounds. Never stored plain text.
+
+**JWT** — HS256, 7-day TTL, minimal payload (userId, email, tier, jti). No sensitive data.
+
+**Token blacklist** — Redis stores revoked JTI hashes for remaining token lifetime. Fail-open if Redis is down.
+
+**Rate limiting**
+- Login: 5 attempts / 15 min / IP (skips successful)
+- Signup: 3 / hr / IP
+- Forgot password: 3 / hr / IP
+
+**Account lockout** — 5 consecutive failed logins locks account for 15 minutes.
+
+**Security obscurity** — Login always returns `invalid_credentials` whether email exists or not.
+
+**CSRF** — SameSite headers + no cookie auth (JWT in Authorization header only).
+
+**CSP** — `helmet` with strict Content-Security-Policy.
 
 ---
 
@@ -76,26 +118,25 @@ kim-upgrade/
 ### 1. Database
 
 ```bash
-# Create database
-createdb kim_db
-
-# Run schema
-psql kim_db -f database/schema.sql
+psql $DATABASE_URL -f database/auth-schema.sql
 ```
 
-### 2. Backend
+### 2. Redis
+
+```bash
+# Local dev
+docker run -p 6379:6379 redis:alpine
+
+# Or use Railway / Upstash for production
+```
+
+### 3. Backend
 
 ```bash
 cd backend
 npm install
-
-# Copy and fill in environment variables
-cp .env.example .env
-# Edit .env with your values
-
-npm run dev      # Development with hot reload
-npm run build    # Production build
-npm start        # Run production build
+cp .env.example .env   # Fill in values
+npm run dev
 ```
 
 ### Required Environment Variables
@@ -103,100 +144,56 @@ npm start        # Run production build
 | Variable | Description |
 |---|---|
 | `DATABASE_URL` | PostgreSQL connection string |
-| `JWT_SECRET` | Random 32+ character secret |
-| `SELLAR_PRO_PRODUCT_ID` | Your Sellar product ID for Pro tier |
-| `SELLAR_WEBHOOK_SECRET` | Sellar webhook signing secret (optional but recommended) |
-| `ALLOWED_ORIGIN` | Frontend URL for CORS |
+| `JWT_SECRET` | Min 32 chars — generate with `openssl rand -hex 32` |
+| `REDIS_URL` | Redis connection string |
+| `APP_URL` | Frontend URL (used in reset email links) |
+| `SMTP_*` | Email settings (leave blank for dev log mode) |
 
-### 3. Frontend
+### 4. Frontend
 
 ```bash
 cd frontend
 npm install
-
-# Set API URL
 echo "REACT_APP_API_URL=http://localhost:3001" > .env.local
-
-npm start    # Development
-npm run build # Production
+npm start
 ```
 
 ---
 
-## API Reference
+## Password Requirements
 
-### Authentication
-
-All protected endpoints require:
-```
-Authorization: Bearer <jwt_token>
-```
-
-### Endpoints
-
-| Method | Path | Auth | Description |
-|---|---|---|---|
-| POST | `/api/auth/signup` | No | Register + auto-assign Free tier |
-| POST | `/api/auth/login` | No | Login, receive JWT |
-| GET | `/api/agents` | Yes | List agents + subscription info |
-| POST | `/api/agents` | Yes | Create agent (enforces 5-agent limit for Free) |
-| DELETE | `/api/agents/:id` | Yes | Delete an agent |
-| GET | `/api/user/subscription` | Yes | Subscription status |
-| POST | `/api/upgrade` | Yes | Get Sellar checkout URL |
-| POST | `/api/webhook/sellar` | No | Sellar payment webhook |
-
-### 402 Response (agent limit reached)
-
-```json
-{
-  "error": "agent_limit_reached",
-  "message": "Free tier limited to 5 agents. Upgrade to Pro for unlimited agents.",
-  "current_count": 5,
-  "limit": 5,
-  "tier": "free",
-  "upgrade_url": "https://checkout.sellar.io/YOUR_PRODUCT_ID?prefill_email=..."
-}
-```
+- Minimum 8 characters
+- At least 1 uppercase letter
+- At least 1 lowercase letter
+- At least 1 number
+- Must not contain email address
 
 ---
 
-## Sellar Webhook Setup
+## Route Protection
 
-1. In your Sellar dashboard, set webhook URL to:
-   `https://yourdomain.com/api/webhook/sellar`
+Wrap any page in `<ProtectedRoute>` to require auth:
 
-2. Subscribe to events: `payment.success`, `subscription.created`
+```tsx
+// Require login
+<ProtectedRoute>
+  <Dashboard />
+</ProtectedRoute>
 
-3. Copy the webhook signing secret into `SELLAR_WEBHOOK_SECRET`
+// Require Pro tier
+<ProtectedRoute requiredTier="pro">
+  <AdvancedAnalytics />
+</ProtectedRoute>
+```
 
-The webhook handler:
-- Verifies signature (HMAC-SHA256)
-- Finds user by `customer_email` or `sellar_customer_id`
-- Sets `subscription_tier = 'pro'`
-- Logs change to `subscription_changes` audit table
-- Returns 200 always (prevents Sellar retry storms)
+Unauthenticated → redirect to `/login` (with `?from` preserved).
+Wrong tier → redirect to `/upgrade`.
 
 ---
 
-## Frontend Components
+## Auto Token Refresh
 
-### `<AgentList />`
-Main dashboard. Fetches agents + subscription, handles create/delete, shows `<UpgradeDialog>` on 402 error.
-
-### `<UpgradeDialog isOpen onClose currentCount limit tier upgradeUrl />`
-Full-screen modal with tier comparison, ROI calculator, and redirect to Sellar.
-
-### `<SubscriptionCard subscription onUpgradeClick />`
-Sidebar card showing quota, progress bar, and upgrade CTA.
-
-### `<AgentQuotaBar subscription />`
-Compact inline indicator with color-coded progress (green → yellow → red).
-
-### `<QuotaWarningBanner subscription onUpgradeClick />`
-Auto-shown when ≤2 agents remain. Auto-dismisses after 15s.
-
-### `<UpgradePrompt userTier context onUpgrade />`
-Context-aware CTA banner for dashboard, agents page, or analytics page.
+`AuthContext` automatically schedules a token refresh 1 hour before expiry. The API client also retries on 401 by calling `/api/auth/refresh` once before redirecting to login.
 
 ---
 
@@ -204,52 +201,40 @@ Context-aware CTA banner for dashboard, agents page, or analytics page.
 
 ```bash
 cd backend
-
-# Set test database
-export TEST_DATABASE_URL=postgresql://user:pass@localhost:5432/kim_test
-
-npm test         # Run all tests
-npm test -- --coverage  # With coverage report
+export DATABASE_URL=postgresql://user:pass@localhost:5432/kim_test
+export REDIS_URL=redis://localhost:6379
+npm test
 ```
 
-Tests cover:
-- Signup → free tier assignment
-- Login → JWT issuance
-- Agent creation (agents 1–5 succeed, 6th returns 402)
-- Webhook upgrades user to Pro
-- After upgrade, 6th+ agents succeed
-- Auth enforcement on all protected routes
+Tests cover all 8 endpoints including the full signup → login → change password → logout cycle.
 
 ---
 
 ## Deployment Checklist
 
-- [ ] Set all required environment variables
-- [ ] Run `database/schema.sql` on production DB
-- [ ] Configure Sellar webhook URL
-- [ ] Set `NODE_ENV=production` to hide stack traces
-- [ ] Enable SSL on database connection
-- [ ] Configure CORS `ALLOWED_ORIGIN` to production frontend URL
-- [ ] Set strong `JWT_SECRET` (use `openssl rand -hex 32`)
-- [ ] Test webhook with Sellar's test payment
-- [ ] Monitor `subscription_changes` table for audit trail
+- [ ] `JWT_SECRET` is 32+ random chars (`openssl rand -hex 32`)
+- [ ] `DATABASE_URL` points to production DB
+- [ ] `REDIS_URL` configured (Railway Redis / Upstash / ElastiCache)
+- [ ] `APP_URL` = production frontend URL
+- [ ] SMTP credentials set for password reset emails
+- [ ] `ALLOWED_ORIGIN` = exact production frontend domain
+- [ ] `NODE_ENV=production`
+- [ ] Run `database/auth-schema.sql` on production DB
+- [ ] Test full signup → login → reset flow end-to-end
+- [ ] Verify security headers with https://securityheaders.com
 
 ---
 
 ## Troubleshooting
 
-**User not upgraded after payment**
-- Check `/api/webhook/sellar` logs for the webhook call
-- Verify `SELLAR_WEBHOOK_SECRET` matches Sellar dashboard
-- Confirm user exists with matching email or `sellar_customer_id`
+**"Token expired" on every request**
+User's clock may be far off, or `JWT_SECRET` changed. Have user logout and login again.
 
-**402 error even on Pro**
-- JWT may be stale (issued before upgrade). User should log out and back in.
-- Verify `subscription_tier = 'pro'` in the `users` table
+**Redis connection refused**
+Set `REDIS_URL` or start local Redis. System fails-open if Redis is unavailable (tokens won't be blacklisted, but requests won't be blocked).
 
-**CORS errors**
-- Check `ALLOWED_ORIGIN` env var matches your frontend URL exactly
+**Password reset emails not arriving**
+Set `SMTP_*` env vars. In dev mode, emails are logged to console only (no actual delivery).
 
-**Database connection errors**
-- Verify `DATABASE_URL` format: `postgresql://user:pass@host:5432/dbname`
-- Check firewall/network rules if using hosted DB
+**Account locked**
+5 failed logins in 15 min. Either wait, or in emergency: `UPDATE users SET account_locked_until = NULL WHERE email = '...'`.
